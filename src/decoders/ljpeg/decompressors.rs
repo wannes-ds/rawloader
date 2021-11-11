@@ -144,6 +144,66 @@ pub fn decode_ljpeg_4components(ljpeg: &LjpegDecompressor, out: &mut [u16], widt
   Ok(())
 }
 
+/// Predict using average of value to the left and value above
+pub fn decode_ljpeg_pred7_3components(ljpeg: &LjpegDecompressor, out: &mut [u16], x: usize, stripwidth:usize, width: usize, height: usize) -> Result<(),String> {
+  if ljpeg.sof.width*3 < width || ljpeg.sof.height < height {
+    return Err(format!("ljpeg: trying to decode {}x{} into {}x{}",
+                       ljpeg.sof.width*3, ljpeg.sof.height,
+                       width, height).to_string())
+  }
+
+  let ref htable1 = ljpeg.dhts[ljpeg.sof.components[0].dc_tbl_num];
+  let ref htable2 = ljpeg.dhts[ljpeg.sof.components[1].dc_tbl_num];
+  let ref htable3 = ljpeg.dhts[ljpeg.sof.components[2].dc_tbl_num];
+  let mut pump = BitPumpJPEG::new(ljpeg.buffer);
+
+  let base_prediction = 1 << (ljpeg.sof.precision - ljpeg.point_transform -1);
+  out[x]   = (base_prediction + htable1.huff_decode(&mut pump)?) as u16;
+  out[x+1] = (base_prediction + htable2.huff_decode(&mut pump)?) as u16;
+  out[x+2] = (base_prediction + htable3.huff_decode(&mut pump)?) as u16;
+  let skip_x = ljpeg.sof.width - width/3;
+
+  for row in 0..height {
+    let startcol = if row == 0 {x+3} else {x};
+    for col in (startcol..(width+x)).step_by(3) {
+      let ra_pos = if col == x {
+        // At start of line predictor starts with start of previous line
+        (row-1)*stripwidth+x
+      } else {
+        // All other cases use the two previous pixels in the same line
+        row*stripwidth+col-3
+      };
+      let mut p1 = out[ra_pos] as i32;
+      let mut p2 = out[ra_pos+1] as i32;
+      let mut p3 = out[ra_pos+2] as i32;
+
+      if row != 0 {
+        let rb_pos = (row-1)*stripwidth+col;
+        p1 = (p1 + out[rb_pos] as i32) >> 1;
+        p2 = (p2 + out[rb_pos+1] as i32) >> 1;
+        p3 = (p3 + out[rb_pos+2] as i32) >> 1;
+      }
+
+      let diff1 = htable1.huff_decode(&mut pump)?;
+      let diff2 = htable2.huff_decode(&mut pump)?;
+      let diff3 = htable3.huff_decode(&mut pump)?;
+
+      out[row*stripwidth+col] = (p1 + diff1) as u16;
+      out[row*stripwidth+col+1] = (p2 + diff2) as u16;
+      out[row*stripwidth+col+2] = (p3 + diff3) as u16;
+    }
+
+    // Skip extra encoded differences if the ljpeg frame is wider than the output
+    for _ in 0..skip_x {
+      htable1.huff_decode(&mut pump)?;
+      htable2.huff_decode(&mut pump)?;
+      htable3.huff_decode(&mut pump)?;
+    }
+  }
+
+  Ok(())
+}
+
 fn set_yuv_420(out: &mut [u16], row: usize, col: usize, width: usize, y1: i32, y2: i32, y3: i32, y4: i32, cb: i32, cr: i32) {
   let pix1 = row*width+col;
   let pix2 = pix1+3;

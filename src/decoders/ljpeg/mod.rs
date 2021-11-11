@@ -264,6 +264,12 @@ impl<'a> LjpegDecompressor<'a> {
           c => return Err(format!("ljpeg: {} component files not supported", c).to_string()),
         }
       },
+      7 => {
+        match self.sof.cps {
+          3 => decode_ljpeg_pred7_3components(self, out, x, stripwidth, width, height),
+          c => return Err(format!("ljpeg: {} component files not supported", c).to_string()),
+        }
+      },
       8 => decode_hasselblad(self, out, width),
       p => return Err(format!("ljpeg: predictor {} not supported", p).to_string()),
     }
